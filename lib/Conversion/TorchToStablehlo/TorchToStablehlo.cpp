@@ -13,6 +13,7 @@
 #include "PopulatePatterns.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Quant/IR/Quant.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -40,6 +41,7 @@ public:
     registry.insert<tensor::TensorDialect>();
     registry.insert<shape::ShapeDialect>();
     registry.insert<arith::ArithDialect>();
+    registry.insert<quant::QuantDialect>();
     TorchConversion::getBackendTypeConversionDependentDialects(registry);
   }
   void runOnOperation() override {
@@ -47,7 +49,7 @@ public:
     ConversionTarget target(*context);
     target.addLegalDialect<chlo::ChloDialect, stablehlo::StablehloDialect,
                            tensor::TensorDialect, arith::ArithDialect,
-                           shape::ShapeDialect>();
+                           shape::ShapeDialect, quant::QuantDialect>();
 
     TypeConverter typeConverter;
     typeConverter.addConversion([](Type type) { return type; });

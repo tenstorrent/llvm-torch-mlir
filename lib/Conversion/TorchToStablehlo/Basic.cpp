@@ -14,6 +14,7 @@
 #include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -1923,6 +1924,125 @@ public:
 };
 } // namespace
 
+// AtenQuantizePerTensorOp
+namespace {
+class ConvertAtenQuantizePerTensorOp
+    : public OpConversionPattern<AtenQuantizePerTensorOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(AtenQuantizePerTensorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto *zeroPoint = op.getZeroPoint().getDefiningOp();
+    if (!zeroPoint || !isa<ConstantIntOp>(zeroPoint)) {
+      return failure();
+    }
+    auto zeroPointConstantOp = mlir::cast<ConstantIntOp>(zeroPoint);
+    auto zeroPointValue = zeroPointConstantOp.getValueAttr().getInt();
+
+    auto scale = op.getScale().getDefiningOp();
+    if (!scale || !isa<ConstantFloatOp>(scale)) {
+      return failure();
+    }
+
+    auto scaleConstantOp = mlir::cast<ConstantFloatOp>(scale);
+    auto scaleValue =
+        scaleConstantOp.getValueAttr().getValue().convertToDouble();
+
+    auto users = op.getResult().getUsers();
+    auto opUser = *op.getResult().user_begin();
+    if (!(std::distance(users.begin(), users.end()) == 1) ||
+        !isa<AtenIntReprOp>(opUser)) {
+      return failure();
+    }
+
+    auto inputElemType =
+        mlir::cast<RankedTensorType>(
+            getTypeConverter()->convertType(op.getOperands().front().getType()))
+            .getElementType();
+
+    mlir::Type dtype =
+        cast<ValueTensorType>(op->getResult(0).getType()).getDtype();
+    int32_t bitWidth = 0;
+    int32_t flags = quant::QuantizationFlags::FlagValue::Signed;
+    if (isa<QUInt8Type>(dtype)) {
+      bitWidth = 8;
+      flags = 0;
+    } else if (isa<QInt8Type>(dtype) || isa<QUInt8Type>(dtype)) {
+      bitWidth = 8;
+    } else if (isa<QInt16Type>(dtype)) {
+      bitWidth = 16;
+    } else if (isa<QInt32Type>(dtype)) {
+      bitWidth = 32;
+    } else {
+      return failure();
+    }
+    auto storageType = IntegerType::get(getContext(), bitWidth);
+
+    // Minimum and maximum values for unsigned integer.
+    int64_t minValue = 0;
+    int64_t maxValue = (1LL << bitWidth) - 1;
+    // Update the minimum and maximum for signed integer.
+    if (flags) {
+      // For signed integers (2's complement representation)
+      minValue = -(1LL << (bitWidth - 1));
+      maxValue = (1LL << (bitWidth - 1)) - 1;
+    }
+
+    auto qty = quant::UniformQuantizedType::get(
+        flags, storageType, inputElemType, scaleValue, zeroPointValue, minValue,
+        maxValue);
+
+    RankedTensorType outputType = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+    mlir::TensorType new_type = outputType.clone(qty);
+
+    stablehlo::UniformQuantizeOp bcastScalar =
+        rewriter.replaceOpWithNewOp<stablehlo::UniformQuantizeOp>(
+            opUser, new_type, adaptor.getOperands().front());
+
+    opUser->getResults().front().replaceAllUsesWith(
+        bcastScalar->getResults().front());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+} // namespace
+
+// Aten_MakePerTensorQuantizedTensorOp
+namespace {
+class ConvertAten_MakePerTensorQuantizedTensorOp
+    : public OpConversionPattern<Aten_MakePerTensorQuantizedTensorOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Aten_MakePerTensorQuantizedTensorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto opUser = *op.getResult().user_begin();
+    auto users = op.getResult().getUsers();
+    if (!(std::distance(users.begin(), users.end()) == 1) ||
+        !isa<AtenDequantizeSelfOp>(opUser)) {
+      return failure();
+    }
+    // [TODO] verify that zeroPoint and Scale matches with the input operand
+    // type.
+    // auto zero_point = op.getZeroPoint();
+    // auto scale = op.getScale();
+    RankedTensorType outputType = cast<RankedTensorType>(
+        getTypeConverter()->convertType(opUser->getResult(0).getType()));
+
+    rewriter.replaceOpWithNewOp<stablehlo::UniformDequantizeOp>(
+            opUser, outputType, adaptor.getOperands().front());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+} // namespace
+
 // AtenFillScalarOp
 template <>
 LogicalResult ConvertAtenOp<AtenFillScalarOp>::matchAndRewrite(
@@ -2151,6 +2271,10 @@ void mlir::torch::torch_to_stablehlo::populateBasicOpPatternsAndLegality(
   patterns.add<ConvertAtenTransposeIntOp>(typeConverter, context);
   target.addIllegalOp<RuntimeAssertOp>();
   patterns.add<ConvertRuntimeAssertOp>(typeConverter, context);
+  // target.addIllegalOp<AtenQuantizePerTensorOp>();
+  patterns.add<ConvertAtenQuantizePerTensorOp>(typeConverter, context);
+  patterns.add<ConvertAten_MakePerTensorQuantizedTensorOp>(typeConverter,
+                                                           context);
 
 #define INSERT_UNARY_PATTERN(AtenOp, StablehloOp)                              \
   target.addIllegalOp<AtenOp>();                                               \
