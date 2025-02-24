@@ -2261,7 +2261,7 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
 
         bool rank0 = scaleTy.getSizes().size() == 0;
         bool length1 =
-            scaleTy.getSizes().size() == 1 && scaleTy.getSizes()[0] == 1;
+            scaleTy.getSizes().size() == 1 && scaleTy.getSizes()[0] > 1;
 
         if (!rank0 && !length1)
           return rewriter.notifyMatchFailure(binder.op,
@@ -2270,6 +2270,23 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
         if (!qTensorTy) {
           return rewriter.notifyMatchFailure(binder.op,
                                              "unsupported result dtype");
+        }
+
+        if (length1) {
+          int64_t axis;
+          if (binder.s64IntegerAttr(axis, "axis", 0)) {
+            return rewriter.notifyMatchFailure(
+                binder.op, "unable to parse axis attribute.");
+          };
+          Value axisValue = rewriter.create<Torch::ConstantIntOp>(
+              loc, rewriter.getType<Torch::IntType>(),
+              rewriter.getIntegerAttr(rewriter.getIntegerType(64), axis));
+          auto quantize =
+              rewriter.create<Torch::Aten_MakePerChannelQuantizedTensorOp>(
+                  loc, qTensorTy, operand, scale, zeropoint, axisValue);
+          rewriter.replaceOpWithNewOp<Torch::AtenDequantizeSelfOp>(
+              binder.op, resultType, quantize);
+          return success();
         }
 
         scale = rewriter.create<Torch::AtenItemOp>(
