@@ -878,16 +878,21 @@ LogicalResult ConvertAtenOp<ValueTensorLiteralOp>::matchAndRewrite(
   // element type. All tensors with element types other than integer can reuse
   // existing elements attribute.
   // TODO: what about unsigned integer?
+  llvm::errs() << "vliteral conversion\n";
   if (auto elements = dyn_cast<DenseIntElementsAttr>(op.getValueAttr())) {
+    llvm::errs() << "denseint element attr\n";
     Type builtinTensorElemTy = resultType.getElementType();
     unsigned bitWidth = builtinTensorElemTy.getIntOrFloatBitWidth();
+    llvm::errs() << "bitwidth: " << bitWidth << '\n';
 
     DenseElementsAttr valueAttr =
         elements.mapValues(builtinTensorElemTy, [&](const APInt &v) {
           return APInt(bitWidth, v.getSExtValue());
         });
+    llvm::errs() << "value attr conversion success\n";
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, resultType,
                                                        valueAttr);
+    llvm::errs() << "op created\n";
     return success();
   }
 
@@ -2035,7 +2040,7 @@ public:
         getTypeConverter()->convertType(opUser->getResult(0).getType()));
 
     rewriter.replaceOpWithNewOp<stablehlo::UniformDequantizeOp>(
-            opUser, outputType, adaptor.getOperands().front());
+        opUser, outputType, adaptor.getOperands().front());
 
     rewriter.eraseOp(op);
     return success();

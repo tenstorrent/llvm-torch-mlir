@@ -2261,9 +2261,11 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
 
         bool rank0 = scaleTy.getSizes().size() == 0;
         bool length1 =
+            scaleTy.getSizes().size() == 1 && scaleTy.getSizes()[0] == 1;
+        bool length2 =
             scaleTy.getSizes().size() == 1 && scaleTy.getSizes()[0] > 1;
 
-        if (!rank0 && !length1)
+        if (!rank0 && !length1 && !length2)
           return rewriter.notifyMatchFailure(binder.op,
                                              "unimplemented: non-scalar scale");
         auto qTensorTy = getQTorchTypeFromTorchIntType(operandTy);
@@ -2272,7 +2274,7 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
                                              "unsupported result dtype");
         }
 
-        if (length1) {
+        if (length2) {
           int64_t axis;
           if (binder.s64IntegerAttr(axis, "axis", 0)) {
             return rewriter.notifyMatchFailure(
