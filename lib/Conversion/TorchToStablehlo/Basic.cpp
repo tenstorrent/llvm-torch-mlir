@@ -881,11 +881,14 @@ LogicalResult ConvertAtenOp<ValueTensorLiteralOp>::matchAndRewrite(
   if (auto elements = dyn_cast<DenseIntElementsAttr>(op.getValueAttr())) {
     Type builtinTensorElemTy = resultType.getElementType();
     unsigned bitWidth = builtinTensorElemTy.getIntOrFloatBitWidth();
+    bool isSigned = builtinTensorElemTy.isSignedInteger() ||
+                    builtinTensorElemTy.isSignlessInteger();
 
     DenseElementsAttr valueAttr =
         elements.mapValues(builtinTensorElemTy, [&](const APInt &v) {
           return APInt(bitWidth,
-                       bitWidth == 1 ? v.getZExtValue() : v.getSExtValue());
+                       bitWidth == 1 ? v.getZExtValue() : v.getSExtValue(),
+                       isSigned);
         });
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, resultType,
                                                        valueAttr);
