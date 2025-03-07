@@ -155,9 +155,87 @@ public:
     RankedTensorType outputType = cast<RankedTensorType>(
         getTypeConverter()->convertType(opUser->getResult(0).getType()));
 
-    rewriter.replaceOpWithNewOp<stablehlo::UniformDequantizeOp>(
-        opUser, outputType, adaptor.getOperands().front());
+    auto input = adaptor.getOperands().front();
+    auto inputType = mlir::cast<RankedTensorType>(
+                         getTypeConverter()->convertType(input.getType()))
+                         .getElementType();
 
+    if (isa<quant::UniformQuantizedType>(inputType)) {
+
+      rewriter.replaceOpWithNewOp<stablehlo::UniformDequantizeOp>(
+          opUser, outputType, input);
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto inputOp = input.getDefiningOp();
+
+    if (!isa<stablehlo::ConstantOp>(inputOp)) {
+      return failure();
+    }
+
+    auto *zeroPoint = op.getZeroPoint().getDefiningOp();
+    if (!zeroPoint || !isa<ConstantIntOp>(zeroPoint)) {
+      return failure();
+    }
+    auto zeroPointConstantOp = mlir::cast<ConstantIntOp>(zeroPoint);
+    auto zeroPointValue = zeroPointConstantOp.getValueAttr().getInt();
+
+    auto scale = op.getScale().getDefiningOp();
+    if (!scale || !isa<ConstantFloatOp>(scale)) {
+      return failure();
+    }
+
+    auto scaleConstantOp = mlir::cast<ConstantFloatOp>(scale);
+    auto scaleValue =
+        scaleConstantOp.getValueAttr().getValue().convertToDouble();
+
+    auto inputElemType =
+        mlir::cast<RankedTensorType>(
+            getTypeConverter()->convertType(opUser->getResultTypes().front()))
+            .getElementType();
+
+    mlir::Type dtype =
+        cast<ValueTensorType>(op->getResult(0).getType()).getDtype();
+    int32_t bitWidth = 0;
+    int32_t flags = quant::QuantizationFlags::FlagValue::Signed;
+    if (isa<QUInt8Type>(dtype)) {
+      bitWidth = 8;
+      flags = 0;
+    } else if (isa<QInt8Type>(dtype) || isa<QUInt8Type>(dtype)) {
+      bitWidth = 8;
+    } else if (isa<QInt16Type>(dtype)) {
+      bitWidth = 16;
+    } else if (isa<QInt32Type>(dtype)) {
+      bitWidth = 32;
+    } else {
+      return failure();
+    }
+    auto storageType = IntegerType::get(getContext(), bitWidth);
+
+    // Minimum and maximum values for unsigned integer.
+    int64_t minValue = 0;
+    int64_t maxValue = (1LL << bitWidth) - 1;
+    // Update the minimum and maximum for signed integer.
+    if (flags) {
+      // For signed integers (2's complement representation)
+      minValue = -(1LL << (bitWidth - 1));
+      maxValue = (1LL << (bitWidth - 1)) - 1;
+    }
+
+    auto qty = quant::UniformQuantizedType::get(
+        flags, storageType, inputElemType, scaleValue, zeroPointValue, minValue,
+        maxValue);
+
+    // RankedTensorType outputType = cast<RankedTensorType>(
+    //   getTypeConverter()->convertType(op->getResult(0).getType()));
+    mlir::TensorType new_type = outputType.clone(qty);
+    auto valueAttr = mlir::cast<stablehlo::ConstantOp>(inputOp).getValueAttr();
+    auto constantOp = rewriter.create<stablehlo::ConstantOp>(
+        op->getLoc(), new_type, valueAttr);
+    auto quantize = rewriter.replaceOpWithNewOp<stablehlo::UniformDequantizeOp>(
+        opUser, outputType, constantOp);
     rewriter.eraseOp(op);
     return success();
   }
