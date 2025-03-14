@@ -1487,8 +1487,20 @@ LogicalResult ConvertAtenOp<AtenAsStridedOp>::matchAndRewrite(
       cast<RankedTensorType>(adaptor.getSelf().getType()).getShape();
   auto outputShape = cast<BaseTensorType>(op.getResult().getType()).getSizes();
 
+  // Get storage offset
+  int64_t storageOffset;
+  if (!matchPattern(op.getStorageOffset(), m_TorchConstantInt(&storageOffset)))
+    storageOffset = 0;
+
+  // If the the storageOffset is 0 and rank of the output is different than the
+  // rank of the input, then this AtenAsStridedOp is not equivalent to a slice.
+  // It may be a reshape
+  if (inputShape.size() != outputShape.size() && storageOffset == 0)
+    return failure();
+
   // If the output shape is strictly larger than the input shape at any
   // dimension than this AtenAsStridedOp is not equivalent to a slice.
+  // It may be an expand.
   for (uint64_t i = 0; i < outputShape.size(); ++i) {
     if (outputShape[i] > inputShape[i])
       return failure();
@@ -1510,11 +1522,6 @@ LogicalResult ConvertAtenOp<AtenAsStridedOp>::matchAndRewrite(
     return op.emitError(
         "unimplemented: the tensor list is not from list construct");
 
-  // Get storage offset
-  int64_t offset;
-  if (!matchPattern(op.getStorageOffset(), m_TorchConstantInt(&offset)))
-    offset = 0;
-
   SmallVector<int64_t> outSize(inputShape.size(), 0);
   for (uint64_t i = 0; i < outSizeValues.size(); ++i) {
     if (!matchPattern(outSizeValues[i], m_TorchConstantInt(&outSize[i])))
@@ -1526,31 +1533,66 @@ LogicalResult ConvertAtenOp<AtenAsStridedOp>::matchAndRewrite(
       return failure();
   }
 
-  // Slice dims are the dims where the input and output shapre are not equal.
-  SmallVector<int64_t> sliceDims;
-  for (uint64_t i = 0; i < inputShape.size(); ++i) {
-    if (outSize[i] != inputShape[i])
-      sliceDims.push_back(i);
-  }
-
-  // If there are no slice dims, then the AtenAsStridedOp is equivalent to the
-  // input tensor.
-  if (sliceDims.empty()) {
-    rewriter.replaceOp(op, adaptor.getSelf());
-    return success();
-  }
-
   SmallVector<int64_t> startIndices(inputShape.size(), 0);
-  SmallVector<int64_t> sliceStrides(opStrides.size(), 1);
-  SmallVector<int64_t> limitIndices = outSize;
-  for (auto dim : sliceDims) {
-    startIndices[dim] = offset / contiguousStrides[dim];
-    sliceStrides[dim] = opStrides[dim] / contiguousStrides[dim];
-    limitIndices[dim] = startIndices[dim] + outSize[dim] * sliceStrides[dim];
+  if (storageOffset > 0) {
+    int64_t remainingOffset = storageOffset;
+    for (uint64_t dim = 0; dim < contiguousStrides.size(); dim++) {
+      auto idx = remainingOffset / contiguousStrides[dim];
+      remainingOffset = remainingOffset % contiguousStrides[dim];
+      startIndices[dim] = idx;
+    }
+  }
+
+  // Check that the storageOffset translates to valid start indices.
+  for (uint64_t dim = 0; dim < startIndices.size(); dim++) {
+    if (startIndices[dim] < 0 || startIndices[dim] >= inputShape[dim])
+      return failure();
+  }
+
+  // Compute the step and end index for each dimenstion
+  SmallVector<int64_t> sliceSteps(opStrides.size(), 1);
+  SmallVector<int64_t> endIndices = outSize;
+  for (uint64_t dim = 0; dim < inputShape.size(); dim++) {
+    auto originalDimSize = inputShape[dim];
+    auto originalDimStride = contiguousStrides[dim];
+    auto newDimSize = outSize[dim];
+    auto newDimStride = opStrides[dim];
+
+    // Case where this is a slice with a step of 1.
+    if (newDimStride == originalDimStride) {
+      auto startIndex = startIndices[dim];
+      auto endIndex = startIndex + newDimSize;
+      auto step = 1;
+
+      // If the end index is larger than the original dim size then this is not
+      // a slice
+      if (endIndex > originalDimSize)
+        return failure();
+      sliceSteps[dim] = step;
+      endIndices[dim] = endIndex;
+    }
+    // Case where this is a slice with a step > 1
+    else if (newDimStride > originalDimStride &&
+             newDimStride % originalDimStride == 0) {
+      auto step = newDimStride / originalDimStride;
+      auto startIndex = startIndices[dim];
+      auto endIndex = startIndex + newDimSize * step;
+
+      // If the end index is larger than the original dim size (with exclusive
+      // upper bound) then this is not a slice
+      if (endIndex > originalDimSize + step)
+        return failure();
+      sliceSteps[dim] = step;
+      endIndices[dim] = endIndex;
+    }
+    // Cannot deduce slice pattern
+    else {
+      return failure();
+    }
   }
 
   rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-      op, adaptor.getSelf(), startIndices, limitIndices, sliceStrides);
+      op, adaptor.getSelf(), startIndices, endIndices, sliceSteps);
   return success();
 }
 
