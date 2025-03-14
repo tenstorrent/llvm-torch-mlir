@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/IR/Matchers.h"
 #include "torch-mlir/Conversion/TorchToStablehlo/TorchToStablehlo.h"
 
 #include "../PassDetail.h"
@@ -22,6 +23,9 @@
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchTypes.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/LogicalResult.h"
+#include <cstdint>
 
 using namespace mlir;
 using namespace mlir::torch;
@@ -1472,6 +1476,126 @@ LogicalResult ConvertAtenOp<AtenGridSamplerOp>::matchAndRewrite(
   return success();
 }
 
+template <>
+LogicalResult ConvertAtenOp<AtenAsStridedOp>::matchAndRewrite(
+    AtenAsStridedOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+
+  // In some cases AtenAsStridedOp is equivalent to a Stablehlo SliceOp.
+  // We will try to match those cases here.
+  auto inputShape =
+      cast<RankedTensorType>(adaptor.getSelf().getType()).getShape();
+  auto outputShape = cast<BaseTensorType>(op.getResult().getType()).getSizes();
+
+  // Get storage offset
+  int64_t storageOffset;
+  if (!matchPattern(op.getStorageOffset(), m_TorchConstantInt(&storageOffset)))
+    storageOffset = 0;
+
+  // If the the storageOffset is 0 and rank of the output is different than the
+  // rank of the input, then this AtenAsStridedOp is not equivalent to a slice.
+  // It may be a reshape
+  if (inputShape.size() != outputShape.size() && storageOffset == 0)
+    return failure();
+
+  // If the output shape is strictly larger than the input shape at any
+  // dimension than this AtenAsStridedOp is not equivalent to a slice.
+  // It may be an expand.
+  for (uint64_t i = 0; i < outputShape.size(); ++i) {
+    if (outputShape[i] > inputShape[i])
+      return failure();
+  }
+
+  // Calculate what the strides attribute should be if the input tensor is
+  // contiguous.
+  SmallVector<int64_t> contiguousStrides(inputShape.size(), 1);
+  for (int i = inputShape.size() - 2; i >= 0; --i) {
+    contiguousStrides[i] = contiguousStrides[i + 1] * inputShape[i + 1];
+  }
+
+  SmallVector<Value> outSizeValues, opStridesValues;
+  if (!getListConstructElements(adaptor.getStride(), opStridesValues))
+    return op.emitError(
+        "unimplemented: the tensor list is not from list construct");
+
+  if (!getListConstructElements(adaptor.getSize(), outSizeValues))
+    return op.emitError(
+        "unimplemented: the tensor list is not from list construct");
+
+  SmallVector<int64_t> outSize(inputShape.size(), 0);
+  for (uint64_t i = 0; i < outSizeValues.size(); ++i) {
+    if (!matchPattern(outSizeValues[i], m_TorchConstantInt(&outSize[i])))
+      return failure();
+  }
+  SmallVector<int64_t> opStrides(inputShape.size(), 0);
+  for (uint64_t i = 0; i < opStridesValues.size(); ++i) {
+    if (!matchPattern(opStridesValues[i], m_TorchConstantInt(&opStrides[i])))
+      return failure();
+  }
+
+  SmallVector<int64_t> startIndices(inputShape.size(), 0);
+  if (storageOffset > 0) {
+    int64_t remainingOffset = storageOffset;
+    for (uint64_t dim = 0; dim < contiguousStrides.size(); dim++) {
+      auto idx = remainingOffset / contiguousStrides[dim];
+      remainingOffset = remainingOffset % contiguousStrides[dim];
+      startIndices[dim] = idx;
+    }
+  }
+
+  // Check that the storageOffset translates to valid start indices.
+  for (uint64_t dim = 0; dim < startIndices.size(); dim++) {
+    if (startIndices[dim] < 0 || startIndices[dim] >= inputShape[dim])
+      return failure();
+  }
+
+  // Compute the step and end index for each dimenstion
+  SmallVector<int64_t> sliceSteps(opStrides.size(), 1);
+  SmallVector<int64_t> endIndices = outSize;
+  for (uint64_t dim = 0; dim < inputShape.size(); dim++) {
+    auto originalDimSize = inputShape[dim];
+    auto originalDimStride = contiguousStrides[dim];
+    auto newDimSize = outSize[dim];
+    auto newDimStride = opStrides[dim];
+
+    // Case where this is a slice with a step of 1.
+    if (newDimStride == originalDimStride) {
+      auto startIndex = startIndices[dim];
+      auto endIndex = startIndex + newDimSize;
+      auto step = 1;
+
+      // If the end index is larger than the original dim size then this is not
+      // a slice
+      if (endIndex > originalDimSize)
+        return failure();
+      sliceSteps[dim] = step;
+      endIndices[dim] = endIndex;
+    }
+    // Case where this is a slice with a step > 1
+    else if (newDimStride > originalDimStride &&
+             newDimStride % originalDimStride == 0) {
+      auto step = newDimStride / originalDimStride;
+      auto startIndex = startIndices[dim];
+      auto endIndex = startIndex + newDimSize * step;
+
+      // If the end index is larger than the original dim size (with exclusive
+      // upper bound) then this is not a slice
+      if (endIndex > originalDimSize + step)
+        return failure();
+      sliceSteps[dim] = step;
+      endIndices[dim] = endIndex;
+    }
+    // Cannot deduce slice pattern
+    else {
+      return failure();
+    }
+  }
+
+  rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+      op, adaptor.getSelf(), startIndices, endIndices, sliceSteps);
+  return success();
+}
+
 void mlir::torch::torch_to_stablehlo::
     populateGatherScatterOpPatternsAndLegality(
         TypeConverter &typeConverter, RewritePatternSet &patterns,
@@ -1489,6 +1613,7 @@ void mlir::torch::torch_to_stablehlo::
   INSERT_ATENOP_PATTERN(AtenIndexTensorHackedTwinOp);
   INSERT_ATENOP_PATTERN(AtenIndexPutHackedTwinOp);
   INSERT_ATENOP_PATTERN(AtenGridSamplerOp);
+  INSERT_ATENOP_PATTERN(AtenAsStridedOp);
 #undef INSERT_ATENOP_PATTERN
 
 #define INSERT_ATEN_SCATTER_PATTERN(AtenOp, reduceType)                        \
