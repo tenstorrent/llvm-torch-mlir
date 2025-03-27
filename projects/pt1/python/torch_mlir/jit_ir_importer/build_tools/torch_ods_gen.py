@@ -1304,6 +1304,9 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     )
     emit("torchvision::nms : (Tensor, Tensor, float) -> (Tensor)")
 
+    emit("_c10d_functional::all_reduce : (Tensor, str, str) -> (Tensor)")
+    emit("_c10d_functional::wait_tensor : (Tensor) -> (Tensor)")
+
 
 def dump_registered_ops(outfile: TextIO, registry: Registry):
     for _, v in sorted(registry.by_unique_key.items()):
