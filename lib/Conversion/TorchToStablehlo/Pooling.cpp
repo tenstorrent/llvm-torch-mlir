@@ -478,24 +478,53 @@ public:
     Value initVal =
         createInitialValueForAtenPoolingOp(op, inputElemTy, rewriter);
 
-    if (Dim == 1) {
-      stablehloPadding[stablehloPadding.size() - 2] = padding[0];
-      stablehloPadding[stablehloPadding.size() - 1] = padding[0];
-    } else if (Dim == 2) {
-      stablehloPadding[stablehloPadding.size() - 4] = padding[0];
-      stablehloPadding[stablehloPadding.size() - 3] = padding[0];
-      stablehloPadding[stablehloPadding.size() - 2] = padding[1];
-      stablehloPadding[stablehloPadding.size() - 1] = padding[1];
-    } else if (Dim == 3) {
-      stablehloPadding[stablehloPadding.size() - 6] = padding[0];
-      stablehloPadding[stablehloPadding.size() - 5] = padding[0];
-      stablehloPadding[stablehloPadding.size() - 4] = padding[1];
-      stablehloPadding[stablehloPadding.size() - 3] = padding[1];
-      stablehloPadding[stablehloPadding.size() - 2] = padding[2];
-      stablehloPadding[stablehloPadding.size() - 1] = padding[2];
-    } else {
+    if (Dim < 1 || Dim > 3) {
       assert(false && "Unsupported pooling dimension");
     }
+
+    const size_t spatialIdxStart = inputRank - Dim;
+
+    for (int i = 0; i < Dim; i++) {
+      const size_t frontPadIdx = (spatialIdxStart + i) * 2;
+      const size_t backPadIdx = (spatialIdxStart + i) * 2 + 1;
+      // Pad front = Pad back = torch padding
+      stablehloPadding[frontPadIdx] = stablehloPadding[backPadIdx] = padding[i];
+
+      if (ceilMode) {
+        // Add additional padding to use same output shape calculation as torch
+        // does See
+        // https://github.com/pytorch/pytorch/blob/c5de6ff079e3e5b453d6ff5190c90f02db458928/aten/src/ATen/native/Pool.h#L79
+        // torch formula:
+        // (inputSize + pad_l + pad_r - dilation * (kernelSize - 1) - 1 +
+        // (ceil_mode ? stride - 1 : 0)) / stride + 1;
+        // if ((outputSize - 1) * stride >= inputSize + pad_l) --outputSize;
+
+        const int64_t inputSize = inputTy.getDimSize(spatialIdxStart + i);
+
+        const int64_t numerator = (inputSize + 2 * padding[i] -
+                                   dilation[i] * (kernelSize[i] - 1) - 1);
+        const int64_t floor_output_size = (numerator) / stride[i] + 1;
+        int64_t ceil_output_size =
+            std::ceil(static_cast<double>(numerator + (stride[i] - 1)) /
+                      stride[i]) +
+            1;
+
+        // Ensure last pooling starts inside input
+        if ((ceil_output_size - 1) * stride[i] >= inputSize + padding[i]) {
+          ceil_output_size--;
+        }
+
+        // Add extra padding to make output size same as torch
+        if (ceil_output_size > floor_output_size) {
+          const int64_t extraPadding =
+              (ceil_output_size - floor_output_size) * stride[i];
+          // stablehloPadding[frontPadIdx] += extraPadding / 2;
+          // stablehloPadding[backPadIdx] += extraPadding - extraPadding / 2;
+          /* delete */ stablehloPadding[frontPadIdx] += extraPadding;
+        }
+      }
+    }
+
     auto windowDimensions = rewriter.getDenseI64ArrayAttr(stablehloKernelSize);
     auto windowStrides = rewriter.getDenseI64ArrayAttr(stablehloStride);
     DenseI64ArrayAttr baseDilations;
