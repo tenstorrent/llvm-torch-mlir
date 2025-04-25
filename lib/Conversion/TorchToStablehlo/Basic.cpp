@@ -651,6 +651,62 @@ public:
 };
 } // namespace
 
+// AtenRoundDecimalsOp
+namespace {
+class ConvertAtenRoundDecimalsOp
+    : public OpConversionPattern<AtenRoundDecimalsOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenRoundDecimalsOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value self = adaptor.getSelf();
+    auto selfTy = cast<TensorType>(self.getType());
+
+    if (!selfTy)
+      return op.emitError("only Tensor types supported in StableHLO");
+    if (!isa<mlir::FloatType>(selfTy.getElementType())) {
+      return op.emitError(
+          "only floating-point datatype legalization supported");
+    }
+    auto inType = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op->getOperand(0).getType()));
+
+    auto outType = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op->getResult(0).getType()));
+
+    int64_t decimals;
+    if (!matchPattern(op->getOperand(1), m_TorchConstantInt(&decimals))) {
+      return rewriter.notifyMatchFailure(
+          op, "non-constant decimal point is not supported.");
+    }
+    stablehlo::ConstantOp constantOp;
+
+    if (decimals) {
+      auto scalarVal = static_cast<float>(pow(10, decimals));
+      constantOp = rewriter.create<stablehlo::ConstantOp>(
+          op->getLoc(), inType,
+          DenseElementsAttr::get(inType, APFloat(scalarVal)));
+      self = rewriter.create<stablehlo::MulOp>(op.getLoc(), inType, self,
+                                               constantOp);
+    }
+
+    auto roundOp = rewriter.create<stablehlo::RoundNearestEvenOp>(
+        op.getLoc(), outType, self);
+
+    if (decimals) {
+      auto divOp = rewriter.create<stablehlo::DivOp>(op->getLoc(), outType,
+                                                     roundOp, constantOp);
+      rewriter.replaceOp(op, divOp);
+      return success();
+    }
+
+    rewriter.replaceOp(op, roundOp);
+    return success();
+  }
+};
+} // namespace
+
 // AtenTransposeIntOp
 namespace {
 class ConvertAtenTransposeIntOp
@@ -2129,6 +2185,8 @@ void mlir::torch::torch_to_stablehlo::populateBasicOpPatternsAndLegality(
     ConversionTarget &target, const TorchToStablehloOptions &options) {
   MLIRContext *context = patterns.getContext();
 
+  target.addIllegalOp<AtenRoundDecimalsOp>();
+  patterns.add<ConvertAtenRoundDecimalsOp>(typeConverter, context);
   target.addIllegalOp<AtenTransposeIntOp>();
   patterns.add<ConvertAtenTransposeIntOp>(typeConverter, context);
   target.addIllegalOp<RuntimeAssertOp>();
