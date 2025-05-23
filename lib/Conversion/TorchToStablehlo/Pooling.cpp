@@ -551,7 +551,7 @@ public:
         RankedTensorType::get(
             {static_cast<int64_t>(inputRank), static_cast<int64_t>(2)},
             rewriter.getI64Type()),
-        stablehloPadding);
+        ceilModePadding);
     // Also add the 'ceil_mode_padding' attribute to the op to distinguish
     // original padding from the extra padding added for ceil_mode.
     reduceWindowOp->setAttr(llvm::StringRef("ceil_mode_padding"), ceilModePad);
