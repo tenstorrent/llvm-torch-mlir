@@ -18,7 +18,7 @@
 // CHECK:           ^bb0(%[[VAL_8:.*]]: tensor<f32>, %[[VAL_9:.*]]: tensor<f32>):
 // CHECK:             %[[VAL_10:.*]] = stablehlo.maximum %[[VAL_8]], %[[VAL_9]] : tensor<f32>
 // CHECK:             stablehlo.return %[[VAL_10]] : tensor<f32>
-// CHECK:           }) : (tensor<?x?x?x?xf32>, tensor<f32>) -> tensor<?x?x?x?xf32>
+// CHECK:           }) {ceil_mode = false, ceil_mode_padding = dense<0> : tensor<4x2xi64>} : (tensor<?x?x?x?xf32>, tensor<f32>) -> tensor<?x?x?x?xf32>
 // CHECK:           %[[VAL_11:.*]] = torch_c.from_builtin_tensor %[[VAL_7]] : tensor<?x?x?x?xf32> -> !torch.vtensor<[?,?,?,?],f32>
 // CHECK:           return %[[VAL_11]] : !torch.vtensor<[?,?,?,?],f32>
 func.func @torch.aten.max_pool2d(%arg0: !torch.vtensor<[?,?,?,?],f32>) -> !torch.vtensor<[?,?,?,?],f32> {
@@ -51,7 +51,7 @@ func.func @torch.aten.max_pool2d(%arg0: !torch.vtensor<[?,?,?,?],f32>) -> !torch
 // CHECK:           ^bb0(%[[VAL_8:.*]]: tensor<f32>, %[[VAL_9:.*]]: tensor<f32>):
 // CHECK:             %[[VAL_10:.*]] = stablehlo.maximum %[[VAL_8]], %[[VAL_9]] : tensor<f32>
 // CHECK:             stablehlo.return %[[VAL_10]] : tensor<f32>
-// CHECK:           }) : (tensor<?x?x?x?xf32>, tensor<f32>) -> tensor<?x?x?x?xf32>
+// CHECK{LITERAL}:  }) {ceil_mode = false, ceil_mode_padding = dense<[[0, 0], [0, 0], [2, 2], [1, 1]]> : tensor<4x2xi64>} : (tensor<?x?x?x?xf32>, tensor<f32>) -> tensor<?x?x?x?xf32>
 // CHECK:           %[[VAL_7:.*]] = torch_c.from_builtin_tensor %[[VAL_6]] : tensor<?x?x?x?xf32> -> !torch.vtensor<[?,?,?,?],f32>
 // CHECK:           return %[[VAL_7]] : !torch.vtensor<[?,?,?,?],f32>
 func.func @torch.aten.max_pool2d$padding(%arg0: !torch.vtensor<[?,?,?,?],f32>) -> !torch.vtensor<[?,?,?,?],f32> {
@@ -84,7 +84,7 @@ func.func @torch.aten.max_pool2d$padding(%arg0: !torch.vtensor<[?,?,?,?],f32>) -
 // CHECK:           ^bb0(%[[VAL_8:.*]]: tensor<f32>, %[[VAL_9:.*]]: tensor<f32>):
 // CHECK:             %[[VAL_10:.*]] = stablehlo.maximum %[[VAL_8]], %[[VAL_9]] : tensor<f32>
 // CHECK:             stablehlo.return %[[VAL_10]] : tensor<f32>
-// CHECK:           }) : (tensor<1x256x56x56xf32>, tensor<f32>) -> tensor<1x256x27x27xf32>
+// CHECK:           }) {ceil_mode = false, ceil_mode_padding = dense<0> : tensor<4x2xi64>} : (tensor<1x256x56x56xf32>, tensor<f32>) -> tensor<1x256x27x27xf32>
 // CHECK:           %[[VAL_7:.*]] = torch_c.from_builtin_tensor %[[VAL_6]] : tensor<1x256x27x27xf32> -> !torch.vtensor<[1,256,27,27],f32>
 // CHECK:           return %[[VAL_7]] : !torch.vtensor<[1,256,27,27],f32>
 func.func @torch.aten.max_pool2d$ceiloff(%arg0: !torch.vtensor<[1,256,56,56],f32>) -> !torch.vtensor<[1,256,27,27],f32> {
@@ -120,7 +120,7 @@ func.func @torch.aten.max_pool2d$ceiloff(%arg0: !torch.vtensor<[1,256,56,56],f32
 // CHECK:           ^bb0(%[[VAL_8:.*]]: tensor<f32>, %[[VAL_9:.*]]: tensor<f32>):
 // CHECK:             %[[VAL_10:.*]] = stablehlo.maximum %[[VAL_8]], %[[VAL_9]] : tensor<f32>
 // CHECK:             stablehlo.return %[[VAL_10]] : tensor<f32>
-// CHECK:           }) : (tensor<1x256x56x56xf32>, tensor<f32>) -> tensor<1x256x28x28xf32>
+// CHECK{LITERAL}:  }) {ceil_mode = true, ceil_mode_padding = dense<[[0, 0], [0, 0], [1, 1], [1, 1]]> : tensor<4x2xi64>} : (tensor<1x256x56x56xf32>, tensor<f32>) -> tensor<1x256x28x28xf32>
 // CHECK:           %[[VAL_7:.*]] = torch_c.from_builtin_tensor %[[VAL_6]] : tensor<1x256x28x28xf32> -> !torch.vtensor<[1,256,28,28],f32>
 // CHECK:           return %[[VAL_7]] : !torch.vtensor<[1,256,28,28],f32>
 func.func @torch.aten.max_pool2d$ceilon(%arg0: !torch.vtensor<[1,256,56,56],f32>) -> !torch.vtensor<[1,256,28,28],f32> {
