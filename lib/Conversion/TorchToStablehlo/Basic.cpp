@@ -921,6 +921,131 @@ LogicalResult ConvertAtenOp<AtenPermuteOp>::matchAndRewrite(
   return success();
 }
 
+// AtenSortOp
+template <>
+LogicalResult ConvertAtenOp<AtenSortOp>::matchAndRewrite(
+    AtenSortOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  // Get input tensor
+  Value input = adaptor.getSelf();
+  auto inputTy = dyn_cast<RankedTensorType>(input.getType());
+  
+  // Validate input tensor
+  if (!inputTy) {
+    return op.emitError("input must be a ranked tensor type");
+  }
+  
+  // Get dimension to sort along
+  int64_t dim;
+  if (!matchPattern(op.getDim(), m_TorchConstantInt(&dim))) {
+    return op.emitError("dim must be a constant integer");
+  }
+  
+  // Normalize negative dimension
+  int64_t inputRank = inputTy.getRank();
+  dim = toPositiveDim(dim, inputRank);
+  
+  // Validate dimension
+  if (!isValidDim(dim, inputRank)) {
+    return op.emitError("dim is out of range for tensor of rank ")
+           << inputRank;
+  }
+  
+  // Get sort direction
+  bool descending;
+  if (!matchPattern(op.getDescending(), m_TorchConstantBool(&descending))) {
+    return op.emitError("descending must be a constant boolean");
+  }
+
+  // Get result types - use dyn_cast instead of cast for safety
+  Type valuesType = getTypeConverter()->convertType(op.getValues().getType());
+  Type indicesType = getTypeConverter()->convertType(op.getIndices().getType());
+  auto valuesTy = dyn_cast<RankedTensorType>(valuesType);
+  auto indicesTy = dyn_cast<RankedTensorType>(indicesType);
+  
+  if (!valuesTy) {
+    return op.emitError("expected ranked tensor type for values result");
+  }
+  if (!indicesTy) {
+    return op.emitError("expected ranked tensor type for indices result");
+  }
+  
+  // Check element type is supported
+  Type elementType = inputTy.getElementType();
+  if (!elementType.isIntOrFloat()) {
+    return op.emitError("only integer and floating-point element types are supported for sorting");
+  }
+
+  // Create placeholder tensors with the correct shapes for indices
+  auto indicesAttr = DenseElementsAttr::get(
+    indicesTy, APInt(64, 0));
+  
+  auto indicesConst = rewriter.create<stablehlo::ConstantOp>(
+    op.getLoc(), indicesTy, indicesAttr);
+  
+  // Create valuerange of inputs - use SmallVector to avoid dangling references
+  llvm::SmallVector<Value> inputVec {input, indicesConst};
+  ValueRange inputs(inputVec);
+  
+  // Create an integer attribute for the dimension
+  auto dimAttr = rewriter.getI64IntegerAttr(dim);
+  
+  // Create a boolean attribute for stable flag
+  auto stableAttr = rewriter.getBoolAttr(false);
+  
+  // Create a region for the comparison function
+  auto sortOp = rewriter.create<stablehlo::SortOp>(
+      op.getLoc(),
+      TypeRange{valuesTy, indicesTy}, // Output types for both values and indices
+      inputs,
+      dimAttr,
+      stableAttr);
+  
+  // Create the comparison function inside the region
+  Region &region = sortOp.getComparator();
+  Block *block = rewriter.createBlock(&region);
+  
+  // Create scalar tensor types for both values and indices
+  auto scalarValueType = RankedTensorType::get({}, elementType);
+  auto scalarIndexType = RankedTensorType::get({}, rewriter.getI64Type()); // Indices are integers
+  
+  // Add arguments to block: (val1, idx1, val2, idx2)
+  // The order matches the input order to SortOp (values tensor first, then indices tensor)
+  block->addArguments(
+      {scalarValueType, scalarIndexType, scalarValueType, scalarIndexType},
+      {op.getLoc(), op.getLoc(), op.getLoc(), op.getLoc()});
+
+  // Use an insertion guard to restore insertion point after comparator ops
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(block);
+
+    // Create the comparison operation based on descending flag
+    // Only compare the values (args 0 and 2), not the indices
+    stablehlo::ComparisonDirection shlo_direction = descending ? stablehlo::ComparisonDirection::GT : stablehlo::ComparisonDirection::LT;
+    
+    Value result = rewriter.create<stablehlo::CompareOp>(
+      op.getLoc(), 
+      block->getArgument(0), // First value 
+      block->getArgument(2), // Second value
+      shlo_direction);
+    
+    // Return the comparison result
+    rewriter.create<stablehlo::ReturnOp>(op.getLoc(), result);
+  }
+  // Insertion point is now restored automatically
+  
+  // Get the sorted values and indices from the sort operation
+  auto sortedValues = sortOp.getResult(0);
+  auto sortedIndices = sortOp.getResult(1); // Now we get real sorted indices
+  
+  // Replace the original op with the sorted values and sorted indices
+  rewriter.replaceOp(op, {sortedValues, sortedIndices});
+  
+  // Return success to indicate that we've handled this operation
+  return success();
+}
+
 // ValueTensorLiteralOp
 template <>
 LogicalResult ConvertAtenOp<ValueTensorLiteralOp>::matchAndRewrite(
@@ -2319,6 +2444,7 @@ void mlir::torch::torch_to_stablehlo::populateBasicOpPatternsAndLegality(
 
   INSERT_ATENOP_PATTERN(AtenBroadcastToOp);
   INSERT_ATENOP_PATTERN(AtenPermuteOp);
+  INSERT_ATENOP_PATTERN(AtenSortOp);
 
   INSERT_ATENOP_PATTERN(ValueTensorLiteralOp);
   INSERT_ATENOP_PATTERN(AtenTensorIntOp);
