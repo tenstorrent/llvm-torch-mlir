@@ -64,7 +64,26 @@ func.func @torch.aten.reciprocal(%arg0: !torch.vtensor<[?,?,?],f32>) -> !torch.v
 
 
 // -----
+// CHECK-LABEL: func.func @torch_aten_sort_main
+// CHECK-SAME: %[[ARG:.*]]: !torch.vtensor<[4],si64>
+func.func @torch_aten_sort_main(%arg0: !torch.vtensor<[4],si64>) -> (!torch.vtensor<[4],si64>, !torch.vtensor<[4],si64>) {
+  // CHECK: %[[INPUT:.*]] = torch_c.to_builtin_tensor %[[ARG]] : !torch.vtensor<[4],si64> -> tensor<4xi64>
+  // CHECK: %[[INDICES:.*]] = stablehlo.constant dense<0> : tensor<4xi64>
+  // CHECK: %[[SORT:.*]]:2 = "stablehlo.sort"(%[[INPUT]], %[[INDICES]]) <{dimension = 0 : i64, is_stable = false}> ({
+  // CHECK: ^bb0(%[[ARG1:.*]]: tensor<i64>, %[[ARG2:.*]]: tensor<i64>, %[[ARG3:.*]]: tensor<i64>, %[[ARG4:.*]]: tensor<i64>):
+  // CHECK:   %[[CMP:.*]] = stablehlo.compare GT, %[[ARG1]], %[[ARG3]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
+  // CHECK:   stablehlo.return %[[CMP]] : tensor<i1>
+  // CHECK: }) : (tensor<4xi64>, tensor<4xi64>) -> (tensor<4xi64>, tensor<4xi64>)
+  // CHECK: %[[RESULT_INDICES:.*]] = torch_c.from_builtin_tensor %[[SORT]]#1 : tensor<4xi64> -> !torch.vtensor<[4],si64>
+  // CHECK: %[[VALUES:.*]] = torch_c.from_builtin_tensor %[[SORT]]#0 : tensor<4xi64> -> !torch.vtensor<[4],si64>
+  // CHECK: return %[[VALUES]], %[[RESULT_INDICES]] : !torch.vtensor<[4],si64>, !torch.vtensor<[4],si64>
+  %int-1 = torch.constant.int -1
+  %true = torch.constant.bool true
+  %values, %indices = torch.aten.sort %arg0, %int-1, %true : !torch.vtensor<[4],si64>, !torch.int, !torch.bool -> !torch.vtensor<[4],si64>, !torch.vtensor<[4],si64>
+  return %values, %indices : !torch.vtensor<[4],si64>, !torch.vtensor<[4],si64>
+}
 
+// -----
 // CHECK-LABEL:   func.func @torch.aten.transpose$basic(
 // CHECK-SAME:                                     %[[VAL_0:.*]]: !torch.vtensor<[4,3],f32>) -> !torch.vtensor<[3,4],f32> {
 // CHECK:           %[[VAL_1:.*]] = torch_c.to_builtin_tensor %[[VAL_0]] : !torch.vtensor<[4,3],f32> -> tensor<4x3xf32>
