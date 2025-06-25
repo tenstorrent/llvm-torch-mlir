@@ -68,7 +68,7 @@ func.func @torch.aten.reciprocal(%arg0: !torch.vtensor<[?,?,?],f32>) -> !torch.v
 // CHECK-SAME: %[[ARG:.*]]: !torch.vtensor<[4],si64>
 func.func @torch_aten_sort_main(%arg0: !torch.vtensor<[4],si64>) -> (!torch.vtensor<[4],si64>, !torch.vtensor<[4],si64>) {
   // CHECK: %[[INPUT:.*]] = torch_c.to_builtin_tensor %[[ARG]] : !torch.vtensor<[4],si64> -> tensor<4xi64>
-  // CHECK: %[[INDICES:.*]] = stablehlo.constant dense<0> : tensor<4xi64>
+  // CHECK: %[[INDICES:.*]] = stablehlo.iota dim = 0 : tensor<4xi64>
   // CHECK: %[[SORT:.*]]:2 = "stablehlo.sort"(%[[INPUT]], %[[INDICES]]) <{dimension = 0 : i64, is_stable = false}> ({
   // CHECK: ^bb0(%[[ARG1:.*]]: tensor<i64>, %[[ARG2:.*]]: tensor<i64>, %[[ARG3:.*]]: tensor<i64>, %[[ARG4:.*]]: tensor<i64>):
   // CHECK:   %[[CMP:.*]] = stablehlo.compare GT, %[[ARG1]], %[[ARG3]] : (tensor<i64>, tensor<i64>) -> tensor<i1>

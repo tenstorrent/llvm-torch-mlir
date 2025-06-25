@@ -968,15 +968,13 @@ LogicalResult ConvertAtenOp<AtenSortOp>::matchAndRewrite(
                         "supported for sorting");
   }
 
-  auto indicesAttr = DenseElementsAttr::get(indicesTy, APInt(64, 0));
+  auto dimAttr = rewriter.getI64IntegerAttr(dim);
 
-  auto indicesConst = rewriter.create<stablehlo::ConstantOp>(
-      op.getLoc(), indicesTy, indicesAttr);
+  auto indicesConst =
+      rewriter.create<stablehlo::IotaOp>(op.getLoc(), indicesTy, dimAttr);
 
   llvm::SmallVector<Value> inputVec{input, indicesConst};
   ValueRange inputs(inputVec);
-
-  auto dimAttr = rewriter.getI64IntegerAttr(dim);
 
   auto stableAttr = rewriter.getBoolAttr(false);
 
