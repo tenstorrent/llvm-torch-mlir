@@ -236,12 +236,9 @@ static Value createTMTensorScanOp(
     int64_t dim, bool inclusive,
     function_ref<void(OpBuilder &, Location, Value, Value)> bodyBuild) {
   auto inputType = cast<RankedTensorType>(input.getType());
-  auto accType = cast<RankedTensorType>(accumulator.getType());
   Type elementType = inputType.getElementType();
   auto scanOp = b.create<TMTensor::ScanOp>(
-      loc, TypeRange{inputType, accType}, input,
-      ValueRange{output, accumulator}, b.getI64IntegerAttr(dim),
-      b.getBoolAttr(inclusive));
+      loc, ValueRange{input}, ValueRange{output, accumulator}, dim, inclusive);
 
   Region &scanOpRegion = scanOp.getRegion();
   auto &scanOpBlock = scanOpRegion.emplaceBlock();
@@ -841,7 +838,6 @@ public:
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
     Location loc = op.getLoc();
-    MLIRContext *context = op->getContext();
     Value input = op.getSelf();
     Value values = op.getValues();
     auto inputType = cast<ValueTensorType>(input.getType());
@@ -961,11 +957,6 @@ public:
         valuesShape, valuesType.getOptionalDtype());
     values =
         rewriter.create<AtenViewOp>(loc, valuesType, values, valuesDimsList);
-
-    // `TMTensor::ScatterOp` expects indices of element type i32.
-    indices = convertTensorToDtype(
-        rewriter, loc, indices,
-        mlir::IntegerType::get(context, 32, mlir::IntegerType::Signed));
 
     input = typeConverter->materializeTargetConversion(
         rewriter, loc, typeConverter->convertType(input.getType()), input);
